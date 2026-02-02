@@ -2,9 +2,10 @@ import requests
 from time import sleep
 
 s = requests.Session()
-s.headers.update({'X-API-key': 'PWV2U8H2'}) # Desktop
+s.headers.update({'X-API-key': 'GORYK3O5'}) # Desktop
 
 MAX_LONG_EXPOSURE = 25000
+MAX_GROSS_EXPOSURE = 25000
 MAX_SHORT_EXPOSURE = -25000
 ORDER_LIMIT = 500
 
@@ -38,17 +39,23 @@ def get_time_sales(ticker):
         time_sales_book = [item["quantity"] for item in book]
         return time_sales_book
 
-def get_gross_position():
+def get_position():
     resp = s.get ('http://localhost:9999/v1/securities')
     if resp.ok:
         book = resp.json()
-        return abs(book[0]['position']) + abs(book[1]['position']) + abs(book[2]['position'])
+        net_position = (book[0]['position']) + (book[1]['position']) + (book[2]['position'])
+        gross_position = abs(book[0]['position']) + abs(book[1]['position']) + abs(book[2]['position'])
+        return net_position, gross_position
     
-def get_net_position():
-    resp = s.get ('http://localhost:9999/v1/securities')
+def get_position_by_ticker(ticker):
+    # added
+    """Get position for specific ticker"""
+    resp = s.get('http://localhost:9999/v1/securities')
     if resp.ok:
-        book = resp.json()
-        return (book[0]['position']) + (book[1]['position']) + (book[2]['position'])
+        securities = resp.json()
+        for sec in securities:
+            if sec['ticker'] == ticker:
+                return sec['position']
 
 def get_open_orders(ticker):
     payload = {'ticker': ticker}
@@ -64,27 +71,46 @@ def get_order_status(order_id):
     if resp.ok:
         order = resp.json()
         return order['status']
+    
+def get_pending_exposure(ticker):
+    """Calculate how much exposure is coming from unfilled orders"""
+    buy_orders, sell_orders = get_open_orders(ticker)
+    
+    pending_buys = sum(order['quantity'] - order['quantity_filled'] 
+                       for order in buy_orders)
+    pending_sells = sum(order['quantity'] - order['quantity_filled'] 
+                        for order in sell_orders)
+    
+    return pending_buys, pending_sells
 
 def main():
     tick, status = get_tick()
     ticker_list = ['CNR','RY','AC']
 
-    while status == 'ACTIVE':        
+    while status == 'ACTIVE': 
+        
+        net_position, gross_position = get_position()
 
-        for i in range(3):
+        for ticker_symbol in ticker_list:
             
-            ticker_symbol = ticker_list[i]
-            net_position = get_net_position()
-            gross_position = get_gross_position()
             best_bid_price, best_ask_price = get_bid_ask(ticker_symbol)
+            pending_buys, pending_sells = get_pending_exposure(ticker_symbol)
+            projected_net = net_position + pending_buys - pending_sells
+            projected_gross = gross_position + pending_buys + pending_sells
+            
        
-            if net_position < MAX_LONG_EXPOSURE and gross_position < MAX_LONG_EXPOSURE:
+            if projected_net < MAX_LONG_EXPOSURE and projected_gross < MAX_GROSS_EXPOSURE:
                 resp = s.post('http://localhost:9999/v1/orders', params = {'ticker': ticker_symbol, 'type': 'LIMIT', 'quantity': ORDER_LIMIT, 'price': best_bid_price, 'action': 'BUY'})
               
-            if net_position > MAX_SHORT_EXPOSURE and gross_position < MAX_LONG_EXPOSURE:
+            if projected_net > MAX_SHORT_EXPOSURE and projected_gross < MAX_GROSS_EXPOSURE:
                 resp = s.post('http://localhost:9999/v1/orders', params = {'ticker': ticker_symbol, 'type': 'LIMIT', 'quantity': ORDER_LIMIT, 'price': best_ask_price, 'action': 'SELL'})
 
             sleep(0.5) 
+            
+            # Consider varying your per order volume to fit in your available gross position limit
+            # If i go over the limit, recover my reducing my positions so my algos starts trading again
+            # varying the prices in my order - bid below best build, offer above the best offer
+            # vary the volume of my orders base on my position for each stock - buy more when I am short
 
             s.post('http://localhost:9999/v1/commands/cancel', params = {'ticker': ticker_symbol})
 
