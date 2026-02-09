@@ -1,0 +1,170 @@
+import requests
+from time import sleep
+import numpy as np
+
+s = requests.Session()
+s.headers.update({'X-API-key': 'YUZCGG9V'}) # Make sure you use YOUR API Key
+
+# global variables
+MAX_LONG_EXPOSURE_NET = 25000
+MAX_SHORT_EXPOSURE_NET = -25000
+MAX_EXPOSURE_GROSS = 500000
+ORDER_LIMIT = 10000
+
+# Base transaction costs
+CREATION_BASE_COST = 0.025  # $0.01 + $0.01 + $0.005 (taker fees)
+REDEMPTION_BASE_COST = 0.0625  # $0.005 + $0.01 + $0.01 + $0.0375 (taker fees + redemption)
+
+# Profit target
+PROFIT_TARGET = 0.02  # Minimum $0.02 profit per trade
+
+# Slippage multiplier (how much of the spread to assume as slippage risk)
+SLIPPAGE_MULTIPLIER = 1.0  # 1x current spread = conservative estimate
+
+def get_tick():   
+    resp = s.get('http://localhost:9999/v1/case')
+    if resp.ok:
+        case = resp.json()
+        return case['tick'], case['status']
+
+
+def get_bid_ask(ticker):
+    payload = {'ticker': ticker}
+    resp = s.get ('http://localhost:9999/v1/securities/book', params = payload)
+    if resp.ok:
+        book = resp.json()
+        bid_side_book = book['bids']
+        ask_side_book = book['asks']
+        
+        bid_prices_book = [item["price"] for item in bid_side_book]
+        ask_prices_book = [item['price'] for item in ask_side_book]
+        
+        best_bid_price = bid_prices_book[0]
+        best_ask_price = ask_prices_book[0]
+  
+        return best_bid_price, best_ask_price
+
+def get_time_sales(ticker):
+    payload = {'ticker': ticker}
+    resp = s.get ('http://localhost:9999/v1/securities/tas', params = payload)
+    if resp.ok:
+        book = resp.json()
+        time_sales_book = [item["quantity"] for item in book]
+        return time_sales_book
+
+def get_position():
+    resp = s.get ('http://localhost:9999/v1/securities')
+    if resp.ok:
+        book = resp.json()
+        gross_position = abs(book[1]['position']) + abs(book[2]['position']) + 2 * abs(book[3]['position'])
+        net_position = book[1]['position'] + book[2]['position'] + 2 * book[3]['position']
+        return gross_position, net_position
+
+def get_open_orders(ticker):
+    payload = {'ticker': ticker}
+    resp = s.get ('http://localhost:9999/v1/orders', params = payload)
+    if resp.ok:
+        orders = resp.json()
+        buy_orders = [item for item in orders if item["action"] == "BUY"]
+        sell_orders = [item for item in orders if item["action"] == "SELL"]
+        return buy_orders, sell_orders
+
+def get_order_status(order_id):
+    resp = s.get ('http://localhost:9999/v1/orders' + '/' + str(order_id))
+    if resp.ok:
+        order = resp.json()
+        return order['status']
+
+def calculate_order_size(gross_position, net_position):
+    """
+    Dynamically calculate order size based on remaining position capacity.
+    Ensures we don't violate gross or net position limits.
+    """
+    # Calculate remaining capacity
+    available_gross = MAX_EXPOSURE_GROSS - gross_position
+    available_net_long = MAX_LONG_EXPOSURE_NET - net_position
+    available_net_short = abs(MAX_SHORT_EXPOSURE_NET - net_position)
+    
+    # For arbitrage, we need 4 units of gross exposure (RGLD + RFIN + 2*INDX)
+    # Each arbitrage trade of size X creates: X + X + 2X = 4X gross exposure
+    max_from_gross = available_gross // 4
+    
+    # For net position, arbitrage should be balanced (net ~0), but we need headroom
+    # Maximum we can trade is limited by the tighter net constraint
+    max_from_net = min(available_net_long, available_net_short) // 2
+    
+    # Take minimum of all constraints
+    order_size = min(ORDER_LIMIT, max_from_gross, max_from_net)
+    
+    # Never return negative order size
+    return max(0, order_size)
+
+def calculate_dynamic_slippage(market_prices):
+    """
+    Estimate slippage based on current bid-ask spreads.
+    Wider spreads = more slippage risk = higher threshold needed.
+    
+    Returns creation_slippage, redemption_slippage
+    """
+    # Calculate current spreads for each security
+    rgld_spread = market_prices[0, 1] - market_prices[0, 0]
+    rfin_spread = market_prices[1, 1] - market_prices[1, 0]
+    indx_spread = market_prices[2, 1] - market_prices[2, 0]
+    
+    # Total slippage estimate: sum of all spreads we're crossing
+    # Multiply by SLIPPAGE_MULTIPLIER to be conservative
+    creation_slippage = (rgld_spread + rfin_spread + indx_spread) * SLIPPAGE_MULTIPLIER
+    redemption_slippage = (indx_spread + rgld_spread + rfin_spread) * SLIPPAGE_MULTIPLIER
+    
+    return creation_slippage, redemption_slippage
+
+def main():
+    tick, status = get_tick()
+    ticker_list = ['RGLD','RFIN','INDX']
+    market_prices = np.array([0.,0.,0.,0.,0.,0.])
+    market_prices = market_prices.reshape(3,2)
+
+    while status == 'ACTIVE':        
+
+        for i in range(3):
+            
+            ticker_symbol = ticker_list[i]
+            market_prices[i,0], market_prices[i,1] = get_bid_ask(ticker_symbol)
+
+        gross_position, net_position = get_position()
+        
+        if gross_position < MAX_EXPOSURE_GROSS and net_position > MAX_SHORT_EXPOSURE_NET and net_position < MAX_LONG_EXPOSURE_NET:
+            
+            # Calculate dynamic order size based on available capacity
+            order_size = calculate_order_size(gross_position, net_position)
+            
+            # Calculate dynamic slippage based on current market spreads
+            creation_slippage, redemption_slippage = calculate_dynamic_slippage(market_prices)
+            
+            # Dynamic thresholds that adapt to market conditions
+            creation_threshold = CREATION_BASE_COST + creation_slippage + PROFIT_TARGET
+            redemption_threshold = REDEMPTION_BASE_COST + redemption_slippage + PROFIT_TARGET
+            
+            # Only trade if we have capacity
+            if order_size > 0:
+                
+                # REDEMPTION ARBITRAGE: Buy cheap INDX, Sell expensive components
+                # Components bid > INDX ask + threshold
+                if market_prices[0, 0] + market_prices[1, 0] > market_prices[2, 1] + redemption_threshold: 
+                    resp = s.post('http://localhost:9999/v1/orders', params = {'ticker': 'RGLD', 'type': 'MARKET', 'quantity': order_size, 'action': 'SELL'})
+                    resp = s.post('http://localhost:9999/v1/orders', params = {'ticker': 'RFIN', 'type': 'MARKET', 'quantity': order_size, 'action': 'SELL'})
+                    resp = s.post('http://localhost:9999/v1/orders', params = {'ticker': 'INDX', 'type': 'MARKET', 'quantity': order_size, 'action': 'BUY'})
+              
+                # CREATION ARBITRAGE: Buy cheap components, Sell expensive INDX
+                # INDX bid > Components ask + threshold
+                if market_prices[0, 1] + market_prices[1, 1] + creation_threshold < market_prices[2, 0]: 
+                    resp = s.post('http://localhost:9999/v1/orders', params = {'ticker': 'RGLD', 'type': 'MARKET', 'quantity': order_size, 'action': 'BUY'})
+                    resp = s.post('http://localhost:9999/v1/orders', params = {'ticker': 'RFIN', 'type': 'MARKET', 'quantity': order_size, 'action': 'BUY'})
+                    resp = s.post('http://localhost:9999/v1/orders', params = {'ticker': 'INDX', 'type': 'MARKET', 'quantity': order_size, 'action': 'SELL'})
+
+            sleep(0.3) 
+
+        tick, status = get_tick()
+
+if __name__ == '__main__':
+    main()
