@@ -1,0 +1,404 @@
+import requests
+from time import sleep
+import numpy as np
+
+s = requests.Session()
+s.headers.update({'X-API-key': 'QBUSABDF'})
+
+MAX_LONG_EXPOSURE_NET = 50000
+MAX_SHORT_EXPOSURE_NET = -50000
+MAX_EXPOSURE_GROSS = 100000
+ORDER_LIMIT = 5000
+
+def get_tick():
+    resp = s.get('http://localhost:9999/v1/case')
+    if resp.ok:
+        case = resp.json()
+        return case['tick'], case['status']
+  
+def get_news(eps_estimates, ownership_estimates, eps):
+    resp = s.get('http://localhost:9999/v1/news', params={'limit': 50})
+    if resp.ok:
+        news_query = resp.json()
+        
+        for i in news_query[::-1]:
+
+            if i['headline'].find("TP") > -1:
+    
+                if i['headline'].find("Analyst") > -1:
+                    
+                    if i['headline'].find("#1") > -1:
+                        eps_estimates[0, 0] = float(i['body'][i['body'].find("Q1:") + 5 : i['body'].find("Q1:") + 9 ])
+                        eps_estimates[0, 1] = float(i['body'][i['body'].find("Q2:") + 5 : i['body'].find("Q2:") + 9 ])
+                        eps_estimates[0, 2] = float(i['body'][i['body'].find("Q3:") + 5 : i['body'].find("Q3:") + 9 ])
+                        eps_estimates[0, 3] = float(i['body'][i['body'].find("Q4:") + 5 : i['body'].find("Q4:") + 9 ])
+                        
+                    if i['headline'].find("#2") > -1:
+                        eps_estimates[0, 1] = float(i['body'][i['body'].find("Q2:") + 5 : i['body'].find("Q2:") + 9 ])
+                        eps_estimates[0, 2] = float(i['body'][i['body'].find("Q3:") + 5 : i['body'].find("Q3:") + 9 ])
+                        eps_estimates[0, 3] = float(i['body'][i['body'].find("Q4:") + 5 : i['body'].find("Q4:") + 9 ])
+
+                    if i['headline'].find("#3") > -1:
+                        eps_estimates[0, 2] = float(i['body'][i['body'].find("Q3:") + 5 : i['body'].find("Q3:") + 9 ])
+                        eps_estimates[0, 3] = float(i['body'][i['body'].find("Q4:") + 5 : i['body'].find("Q4:") + 9 ])
+
+                    if i['headline'].find("#4") > -1:
+                        eps_estimates[0, 3] = float(i['body'][i['body'].find("Q4:") + 5 : i['body'].find("Q4:") + 9 ])
+                    
+                if i['headline'].find("institutional") > -1:
+                    
+                    if i['headline'].find("Q1") > -1:
+                        ownership_estimates[0, 0] = float(i['body'][i['body'].find("%") - 5 : i['body'].find("%")])                    
+                    
+                    if i['headline'].find("Q2") > -1:
+                        ownership_estimates[0, 1] = float(i['body'][i['body'].find("%") - 5 : i['body'].find("%")])                    
+
+                    if i['headline'].find("Q3") > -1:
+                        ownership_estimates[0, 2] = float(i['body'][i['body'].find("%") - 5 : i['body'].find("%")])                                                            
+
+                    if i['headline'].find("Q4") > -1:
+                        ownership_estimates[0, 3] = float(i['body'][i['body'].find("%") - 5 : i['body'].find("%")])                                    
+                
+            if i['headline'].find("AS") > -1:
+                
+                if i['headline'].find("Analyst") > -1:
+                    
+                    if i['headline'].find("#1") > -1:
+                        eps_estimates[1, 0] = float(i['body'][i['body'].find("Q1:") + 5 : i['body'].find("Q1:") + 9 ])
+                        eps_estimates[1, 1] = float(i['body'][i['body'].find("Q2:") + 5 : i['body'].find("Q2:") + 9 ])
+                        eps_estimates[1, 2] = float(i['body'][i['body'].find("Q3:") + 5 : i['body'].find("Q3:") + 9 ])
+                        eps_estimates[1, 3] = float(i['body'][i['body'].find("Q4:") + 5 : i['body'].find("Q4:") + 9 ])
+                        
+                    if i['headline'].find("#2") > -1:
+                        eps_estimates[1, 1] = float(i['body'][i['body'].find("Q2:") + 5 : i['body'].find("Q2:") + 9 ])
+                        eps_estimates[1, 2] = float(i['body'][i['body'].find("Q3:") + 5 : i['body'].find("Q3:") + 9 ])
+                        eps_estimates[1, 3] = float(i['body'][i['body'].find("Q4:") + 5 : i['body'].find("Q4:") + 9 ])
+
+                    if i['headline'].find("#3") > -1:
+                        eps_estimates[1, 2] = float(i['body'][i['body'].find("Q3:") + 5 : i['body'].find("Q3:") + 9 ])
+                        eps_estimates[1, 3] = float(i['body'][i['body'].find("Q4:") + 5 : i['body'].find("Q4:") + 9 ])
+
+                    if i['headline'].find("#4") > -1:
+                        eps_estimates[1, 3] = float(i['body'][i['body'].find("Q4:") + 5 : i['body'].find("Q4:") + 9 ])
+                    
+                if i['headline'].find("institutional") > -1:
+                    
+                    if i['headline'].find("Q1") > -1:
+                        ownership_estimates[1, 0] = float(i['body'][i['body'].find("%") - 5 : i['body'].find("%")])                    
+                    
+                    if i['headline'].find("Q2") > -1:
+                        ownership_estimates[1, 1] = float(i['body'][i['body'].find("%") - 5 : i['body'].find("%")])                    
+
+                    if i['headline'].find("Q3") > -1:
+                        ownership_estimates[1, 2] = float(i['body'][i['body'].find("%") - 5 : i['body'].find("%")])                                                            
+
+                    if i['headline'].find("Q4") > -1:
+                        ownership_estimates[1, 3] = float(i['body'][i['body'].find("%") - 5 : i['body'].find("%")])                                                    
+                
+            if i['headline'].find("BA") > -1:
+                
+                if i['headline'].find("Analyst") > -1:
+                    
+                    if i['headline'].find("#1") > -1:
+                        eps_estimates[2, 0] = float(i['body'][i['body'].find("Q1:") + 5 : i['body'].find("Q1:") + 9 ])
+                        eps_estimates[2, 1] = float(i['body'][i['body'].find("Q2:") + 5 : i['body'].find("Q2:") + 9 ])
+                        eps_estimates[2, 2] = float(i['body'][i['body'].find("Q3:") + 5 : i['body'].find("Q3:") + 9 ])
+                        eps_estimates[2, 3] = float(i['body'][i['body'].find("Q4:") + 5 : i['body'].find("Q4:") + 9 ])
+                        
+                    if i['headline'].find("#2") > -1:
+                        eps_estimates[2, 1] = float(i['body'][i['body'].find("Q2:") + 5 : i['body'].find("Q2:") + 9 ])
+                        eps_estimates[2, 2] = float(i['body'][i['body'].find("Q3:") + 5 : i['body'].find("Q3:") + 9 ])
+                        eps_estimates[2, 3] = float(i['body'][i['body'].find("Q4:") + 5 : i['body'].find("Q4:") + 9 ])
+
+                    if i['headline'].find("#3") > -1:
+                        eps_estimates[2, 2] = float(i['body'][i['body'].find("Q3:") + 5 : i['body'].find("Q3:") + 9 ])
+                        eps_estimates[2, 3] = float(i['body'][i['body'].find("Q4:") + 5 : i['body'].find("Q4:") + 9 ])
+
+                    if i['headline'].find("#4") > -1:
+                        eps_estimates[2, 3] = float(i['body'][i['body'].find("Q4:") + 5 : i['body'].find("Q4:") + 9 ])
+                    
+                if i['headline'].find("institutional") > -1:
+                    
+                    if i['headline'].find("Q1") > -1:
+                        ownership_estimates[2, 0] = float(i['body'][i['body'].find("%") - 5 : i['body'].find("%")])                    
+                    
+                    if i['headline'].find("Q2") > -1:
+                        ownership_estimates[2, 1] = float(i['body'][i['body'].find("%") - 5 : i['body'].find("%")])                    
+
+                    if i['headline'].find("Q3") > -1:
+                        ownership_estimates[2, 2] = float(i['body'][i['body'].find("%") - 5 : i['body'].find("%")])                                                            
+
+                    if i['headline'].find("Q4") > -1:
+                        ownership_estimates[2, 3] = float(i['body'][i['body'].find("%") - 5 : i['body'].find("%")])                                                    
+                
+            if i['headline'].find("Earnings release") > -1:
+                                    
+                if i['headline'].find("Q1") > -1:
+                    eps[0, 0] = float(i['body'][i['body'].find("TP Q1:") + 32 : i['body'].find("TP Q1:") + 36 ])
+                    eps[1, 0] = float(i['body'][i['body'].find("AS Q1:") + 32 : i['body'].find("AS Q1:") + 36 ])
+                    eps[2, 0] = float(i['body'][i['body'].find("BA Q1:") + 32 : i['body'].find("BA Q1:") + 36 ])
+                    
+                if i['headline'].find("Q2") > -1:
+                    eps[0, 1] = float(i['body'][i['body'].find("TP Q2:") + 32 : i['body'].find("TP Q2:") + 36 ])
+                    eps[1, 1] = float(i['body'][i['body'].find("AS Q2:") + 32 : i['body'].find("AS Q2:") + 36 ])
+                    eps[2, 1] = float(i['body'][i['body'].find("BA Q2:") + 32 : i['body'].find("BA Q2:") + 36 ])
+
+                if i['headline'].find("Q3") > -1:
+                    eps[0, 2] = float(i['body'][i['body'].find("TP Q3:") + 32 : i['body'].find("TP Q3:") + 36 ])
+                    eps[1, 2] = float(i['body'][i['body'].find("AS Q3:") + 32 : i['body'].find("AS Q3:") + 36 ])
+                    eps[2, 2] = float(i['body'][i['body'].find("BA Q3:") + 32 : i['body'].find("BA Q3:") + 36 ])
+
+                if i['headline'].find("Q4") > -1:
+                    eps[0, 3] = float(i['body'][i['body'].find("TP Q4:") + 32 : i['body'].find("TP Q4:") + 36 ])
+                    eps[1, 3] = float(i['body'][i['body'].find("AS Q4:") + 32 : i['body'].find("AS Q4:") + 36 ])
+                    eps[2, 3] = float(i['body'][i['body'].find("BA Q4:") + 32 : i['body'].find("BA Q4:") + 36 ])
+                                
+        return eps_estimates, ownership_estimates, eps           
+
+def get_bid_ask(ticker):
+    payload = {'ticker': ticker}
+    resp = s.get('http://localhost:9999/v1/securities/book', params=payload)
+    if resp.ok:
+        book = resp.json()
+        bid_side_book = book['bids']
+        ask_side_book = book['asks']
+        
+        bid_prices_book = [item["price"] for item in bid_side_book]
+        ask_prices_book = [item['price'] for item in ask_side_book]
+        
+        if len(bid_prices_book) == 0:
+            best_bid_price = -1
+        else:
+            best_bid_price = bid_prices_book[0]
+        if len(ask_prices_book) == 0:
+            best_ask_price = -1
+        else:
+            best_ask_price = ask_prices_book[0]
+  
+        return best_bid_price, best_ask_price
+
+def get_position():
+    resp = s.get('http://localhost:9999/v1/securities')
+    if resp.ok:
+        book = resp.json()
+        gross_position = abs(book[0]['position']) + abs(book[1]['position']) + 2 * abs(book[2]['position'])
+        net_position = book[0]['position'] + book[1]['position'] + 2 * book[2]['position']
+        return gross_position, net_position
+
+def get_eps_error(tick, stock_idx, quarter):
+    """
+    Returns the EPS error range for a given stock and quarter based on current tick.
+    EPS error = base_error * quarters_until_release
+    Earnings released at ticks 60, 120, 180, 240.
+    base_error: TP=0.02, AS=0.04, BA=0.06
+    """
+    base_errors = [0.02, 0.04, 0.06]
+    release_ticks = [60, 120, 180, 240]
+    
+    # quarters already released have zero error (actual known)
+    quarters_released = sum(1 for t in release_ticks if tick >= t)
+    if quarter < quarters_released:
+        return 0.0
+    
+    quarters_until_release = (quarter - quarters_released) + 1  # at least 1 quarter away
+    return base_errors[stock_idx] * quarters_until_release
+
+def get_ownership_error(tick, stock_idx):
+    """
+    Ownership error starts at +/- 20/25/30% after Q1 earnings, shrinks by 5% per quarter.
+    Before Q1 earnings (tick < 60), ownership is unknown so use max error.
+    """
+    base_errors = [0.20, 0.25, 0.30]
+    quarters_released = sum(1 for t in [60, 120, 180, 240] if tick >= t)
+    
+    if quarters_released == 0:
+        return base_errors[stock_idx]  # no ownership estimate yet, max uncertainty
+    
+    error = base_errors[stock_idx] - (quarters_released - 1) * 0.05
+    return max(error, 0.0)
+
+def compute_TP_val(eps_total, own):
+    g = (eps_total / 1.43) - 1
+    div = eps_total * 0.80
+    DDM = ((div * (1 + g)) / (0.05 - g)) * (1 - ((1 + g) / (1 + 0.05))**5) + \
+          ((div * ((1 + g)**5) * (1 + 0.02)) / (0.05 - 0.02)) / (1 + 0.05)**5
+    pe = eps_total * 12
+    return (own / 100) * DDM + (1 - own / 100) * pe, DDM, pe
+
+def compute_AS_val(eps_total, own):
+    g = (eps_total / 1.55) - 1
+    div = eps_total * 0.50
+    DDM = ((div * (1 + g)) / (0.075 - g)) * (1 - ((1 + g) / (1 + 0.075))**5) + \
+          ((div * ((1 + g)**5) * (1 + 0.02)) / (0.075 - 0.02)) / (1 + 0.075)**5
+    pe = eps_total * 16
+    return (own / 100) * DDM + (1 - own / 100) * pe, DDM, pe
+
+def compute_BA_val(eps_total, own):
+    g = (eps_total / 1.50) - 1
+    pe_inst = 20 * (1 + g) * eps_total
+    pe_retail = eps_total * 20
+    return (own / 100) * pe_inst + (1 - own / 100) * pe_retail, pe_inst, pe_retail
+
+def main():
+    
+    tick, status = get_tick()
+    
+    ticker_list = ['TP', 'AS', 'BA']
+    market_prices = np.zeros((3, 2))
+    
+    eps_estimates = np.zeros((3, 4))
+    ownership_estimates = np.zeros((3, 4))
+    eps = np.zeros((3, 4))
+    
+    eps_val = np.array([0.40, 0.33, 0.33, 0.37,
+                        0.35, 0.45, 0.50, 0.25,
+                        0.15, 0.50, 0.60, 0.25]).reshape(3, 4)
+    
+    own_val = np.array([50.0, 50.0, 50.0]).reshape(3, 1)
+    
+    while status == "ACTIVE":
+        
+        for i in range(3):
+            market_prices[i, 0], market_prices[i, 1] = get_bid_ask(ticker_list[i])
+            
+        gross_position, net_position = get_position()
+        eps_estimates, ownership_estimates, eps = get_news(eps_estimates, ownership_estimates, eps)
+        
+        print("--- EPS Estimates ---")
+        print(eps_estimates)
+        print("--- Ownership Estimates ---")
+        print(ownership_estimates)
+        print("--- EPS ---")
+        print(eps)
+        
+        for i in range(3):
+            for j in range(4):
+                if eps_estimates[i, j] != 0:
+                    eps_val[i, j] = eps_estimates[i, j]
+                if ownership_estimates[i, j] != 0:
+                    own_val[i, 0] = ownership_estimates[i, j]
+                if eps[i, j] != 0:
+                    eps_val[i, j] = eps[i, j]
+                    
+        print("--- EPS for Valuation ---")
+        print(eps_val)
+        print("--- Ownership for Valuation ---")
+        print(own_val)
+
+        # --- Compute EPS uncertainty bounds per stock ---
+        # Sum up max/min EPS across quarters (only unreleased quarters have error)
+        quarters_released = sum(1 for t in [60, 120, 180, 240] if tick >= t)
+
+        eps_error = np.zeros((3, 4))
+        for i in range(3):
+            for j in range(4):
+                eps_error[i, j] = get_eps_error(tick, i, j)
+
+        eps_val_max = eps_val + eps_error
+        eps_val_min = eps_val - eps_error
+
+        TP_eps     = eps_val.sum(axis=1)[0]
+        TP_eps_max = eps_val_max.sum(axis=1)[0]
+        TP_eps_min = eps_val_min.sum(axis=1)[0]
+
+        AS_eps     = eps_val.sum(axis=1)[1]
+        AS_eps_max = eps_val_max.sum(axis=1)[1]
+        AS_eps_min = eps_val_min.sum(axis=1)[1]
+
+        BA_eps     = eps_val.sum(axis=1)[2]
+        BA_eps_max = eps_val_max.sum(axis=1)[2]
+        BA_eps_min = eps_val_min.sum(axis=1)[2]
+
+        # --- Ownership uncertainty bounds ---
+        own_err = np.array([get_ownership_error(tick, i) for i in range(3)])  # as fraction (e.g. 0.20)
+        own_pct     = own_val[:, 0]                                 # e.g. 50.0
+        own_pct_max = np.clip(own_pct + own_err * 100, 0, 100)
+        own_pct_min = np.clip(own_pct - own_err * 100, 0, 100)
+
+        # --- Midpoint valuations (unchanged logic) ---
+        TP_val, TP_DDM, TP_pe = compute_TP_val(TP_eps, own_pct[0])
+        AS_val, AS_DDM, AS_pe = compute_AS_val(AS_eps, own_pct[1])
+        BA_val, BA_pe_inst, BA_pe_retail = compute_BA_val(BA_eps, own_pct[2])
+
+        # --- Min/Max valuations ---
+        # For TP and AS: if DDM > PE, higher ownership -> higher val -> max own goes with max eps for upper bound
+        #                if DDM < PE, higher ownership -> lower val  -> min own goes with max eps for upper bound
+
+        # TP
+        TP_val_max_eps, _, _ = compute_TP_val(TP_eps_max, own_pct[0])
+        TP_val_min_eps, _, _ = compute_TP_val(TP_eps_min, own_pct[0])
+        if TP_DDM >= TP_pe:
+            TP_val_max, _, _ = compute_TP_val(TP_eps_max, own_pct_max[0])
+            TP_val_min, _, _ = compute_TP_val(TP_eps_min, own_pct_min[0])
+        else:
+            TP_val_max, _, _ = compute_TP_val(TP_eps_max, own_pct_min[0])
+            TP_val_min, _, _ = compute_TP_val(TP_eps_min, own_pct_max[0])
+
+        # AS
+        AS_val_max_eps, _, _ = compute_AS_val(AS_eps_max, own_pct[1])
+        AS_val_min_eps, _, _ = compute_AS_val(AS_eps_min, own_pct[1])
+        if AS_DDM >= AS_pe:
+            AS_val_max, _, _ = compute_AS_val(AS_eps_max, own_pct_max[1])
+            AS_val_min, _, _ = compute_AS_val(AS_eps_min, own_pct_min[1])
+        else:
+            AS_val_max, _, _ = compute_AS_val(AS_eps_max, own_pct_min[1])
+            AS_val_min, _, _ = compute_AS_val(AS_eps_min, own_pct_max[1])
+
+        # BA: institutional PE > retail PE when g > 0, so higher ownership -> higher val
+        BA_val_max, _, _ = compute_BA_val(BA_eps_max, own_pct_max[2])
+        BA_val_min, _, _ = compute_BA_val(BA_eps_min, own_pct_min[2])
+
+        print("--- TP Valuation (min / mid / max) ---")
+        print(f"  {TP_val_min:.2f} / {TP_val:.2f} / {TP_val_max:.2f}")
+        print("--- AS Valuation (min / mid / max) ---")
+        print(f"  {AS_val_min:.2f} / {AS_val:.2f} / {AS_val_max:.2f}")
+        print("--- BA Valuation (min / mid / max) ---")
+        print(f"  {BA_val_min:.2f} / {BA_val:.2f} / {BA_val_max:.2f}")
+
+        # --- Trading logic ---
+        # Phase-based buffer and order size
+        if tick < 60:
+            buffer = 999  # don't trade, prices are random
+            order_qty = 10000
+        elif tick < 120:
+            buffer = 5.0  # Q1 earnings + estimates received
+            order_qty = 10000  # lots of uninformed liquidity early
+        elif tick < 180:
+            buffer = 3.0  # Q2 earnings + estimates received
+            order_qty = 5000
+        elif tick < 240:
+            buffer = 1.5  # Q3 earnings + estimates received
+            order_qty = 5000
+        else:
+            buffer = 0.5  # Q4 estimates received, high confidence
+            order_qty = 5000
+        print(f"--- Buffer: {buffer:.2f}, Order Qty: {order_qty} ---")
+
+        # Hold strategy - market buy when undervalued, limit sell when overvalued
+
+        # TP
+        if market_prices[0, 0] > TP_val + buffer and market_prices[0, 0] != -1 and net_position > MAX_SHORT_EXPOSURE_NET:
+            resp = s.post('http://localhost:9999/v1/orders', params={'ticker': 'TP', 'type': 'LIMIT', 'quantity': ORDER_LIMIT, 'price': TP_val + buffer, 'action': 'SELL'})
+
+        if market_prices[0, 1] < TP_val - buffer and market_prices[0, 1] != -1 and net_position < MAX_LONG_EXPOSURE_NET:
+            resp = s.post('http://localhost:9999/v1/orders', params={'ticker': 'TP', 'type': 'MARKET', 'quantity': ORDER_LIMIT, 'action': 'BUY'})
+
+        # AS
+        if market_prices[1, 0] > AS_val + buffer and market_prices[1, 0] != -1 and net_position > MAX_SHORT_EXPOSURE_NET:
+            resp = s.post('http://localhost:9999/v1/orders', params={'ticker': 'AS', 'type': 'LIMIT', 'quantity': ORDER_LIMIT, 'price': AS_val + buffer, 'action': 'SELL'})
+
+        if market_prices[1, 1] < AS_val - buffer and market_prices[1, 1] != -1 and net_position < MAX_LONG_EXPOSURE_NET:
+            resp = s.post('http://localhost:9999/v1/orders', params={'ticker': 'AS', 'type': 'MARKET', 'quantity': ORDER_LIMIT, 'action': 'BUY'})
+
+        # BA
+        if market_prices[2, 0] > BA_val + buffer and market_prices[2, 0] != -1 and net_position > MAX_SHORT_EXPOSURE_NET:
+            resp = s.post('http://localhost:9999/v1/orders', params={'ticker': 'BA', 'type': 'LIMIT', 'quantity': ORDER_LIMIT, 'price': BA_val + buffer, 'action': 'SELL'})
+
+        if market_prices[2, 1] < BA_val - buffer and market_prices[2, 1] != -1 and net_position < MAX_LONG_EXPOSURE_NET:
+            resp = s.post('http://localhost:9999/v1/orders', params={'ticker': 'BA', 'type': 'MARKET', 'quantity': ORDER_LIMIT, 'action': 'BUY'})
+
+        sleep(0.5)
+        tick, status = get_tick()
+    
+if __name__ == '__main__':
+    main()
