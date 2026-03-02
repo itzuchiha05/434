@@ -1,16 +1,29 @@
 import requests
+import random
 from time import sleep
+from collections import deque
 
 s = requests.Session()
-s.headers.update({'X-API-key': 'GORYK3O5'}) # Desktop
+s.headers.update({'X-API-key': 'MPWH62JM'})
 
-MAX_LONG_EXPOSURE = 25000
-MAX_GROSS_EXPOSURE = 25000
-MAX_SHORT_EXPOSURE = -25000
+MAX_GROSS_EXPOSURE  = 25000
+MAX_TICKER_POSITION = {'CNR': 2000, 'RY': 8000, 'AC': 2000}
+
 ORDER_LIMIT = 500
-
 TICK = 0.01
 
+QUOTE_LIFETIME_BASE = 0.12
+
+FEES    = {'CNR': 0.01,  'RY': 0.0015, 'AC': 0.003}
+REBATES = {'CNR': 0.002, 'RY': 0.0011, 'AC': 0.0001}
+
+PRICE_HISTORY_LEN = {'CNR': 10, 'RY': 20, 'AC': 10}
+price_history = {t: deque(maxlen=PRICE_HISTORY_LEN[t]) for t in ['CNR', 'RY', 'AC']}
+
+
+# --------------------------------------------------
+# API HELPERS
+# --------------------------------------------------
 
 def get_tick():
     resp = s.get('http://localhost:9999/v1/case')
@@ -18,164 +31,195 @@ def get_tick():
         case = resp.json()
         return case['tick'], case['status']
 
+def get_book(ticker):
+    resp = s.get('http://localhost:9999/v1/securities/book', params={'ticker': ticker})
+    if resp.ok:
+        return resp.json()
+
 def get_bid_ask(ticker):
-    payload = {'ticker': ticker}
-    resp = s.get ('http://localhost:9999/v1/securities/book', params = payload)
-    if resp.ok:
-        book = resp.json()
-        bid_side_book = book['bids']
-        ask_side_book = book['asks']
-        
-        bid_prices_book = [item["price"] for item in bid_side_book]
-        ask_prices_book = [item['price'] for item in ask_side_book]
-        
-        best_bid_price = bid_prices_book[0]
-        best_ask_price = ask_prices_book[0]
-  
-        return best_bid_price, best_ask_price
+    book = get_book(ticker)
+    return book['bids'][0]['price'], book['asks'][0]['price']
 
-def get_time_sales(ticker):
-    payload = {'ticker': ticker}
-    resp = s.get ('http://localhost:9999/v1/securities/tas', params = payload)
-    if resp.ok:
-        book = resp.json()
-        time_sales_book = [item["quantity"] for item in book]
-        return time_sales_book
-
-def get_position():
-    resp = s.get ('http://localhost:9999/v1/securities')
-    if resp.ok:
-        book = resp.json()
-        net_position = (book[0]['position']) + (book[1]['position']) + (book[2]['position'])
-        gross_position = abs(book[0]['position']) + abs(book[1]['position']) + abs(book[2]['position'])
-        return net_position, gross_position
-    
-def get_position_by_ticker(ticker):
-    # added
-    """Get position for specific ticker"""
+def get_all_positions():
     resp = s.get('http://localhost:9999/v1/securities')
     if resp.ok:
-        securities = resp.json()
-        for sec in securities:
-            if sec['ticker'] == ticker:
-                return sec['position']
+        book = resp.json()
+        positions = {item['ticker']: item['position'] for item in book}
+        net   = sum(positions.values())
+        gross = sum(abs(v) for v in positions.values())
+        return positions, net, gross
+    return {}, 0, 0
 
-def get_open_orders(ticker):
-    payload = {'ticker': ticker}
-    resp = s.get ('http://localhost:9999/v1/orders', params = payload)
-    if resp.ok:
-        orders = resp.json()
-        buy_orders = [item for item in orders if item["action"] == "BUY"]
-        sell_orders = [item for item in orders if item["action"] == "SELL"]
-        return buy_orders, sell_orders
 
-def get_order_status(order_id):
-    resp = s.get ('http://localhost:9999/v1/orders' + '/' + str(order_id))
-    if resp.ok:
-        order = resp.json()
-        return order['status']
-    
-def calculate_dynamic_order_size(gross_position, ticker_list):
-    """Calculate order size based on available room in gross limit"""
-    
-    # How much room do we have left?
-    available_room = MAX_GROSS_EXPOSURE - gross_position
-    
-    # Safety buffer to avoid hitting limit (conservative)
-    SAFETY_BUFFER = 2000
-    safe_room = available_room - SAFETY_BUFFER
-    
-    # We're quoting all 3 tickers, each with buy AND sell
-    # So we need to divide by 6 (3 tickers × 2 sides)
-    num_potential_orders = len(ticker_list) * 2
-    per_order_room = safe_room / num_potential_orders if num_potential_orders > 0 else 0
-    
-    # Take the minimum of: default order size or available room per order
-    dynamic_size = min(ORDER_LIMIT, per_order_room)
-    
-    # Ensure we don't go negative or too small (minimum 100 shares)
-    dynamic_size = max(100, int(dynamic_size))
-    
-    return dynamic_size
+# --------------------------------------------------
+# SIGNALS
+# --------------------------------------------------
 
-QUOTE_LIFETIME = 0.3  # seconds (tune 0.2–0.7)
+def get_trend(ticker, bid, ask):
+    mid = (bid + ask) / 2
+    price_history[ticker].append(mid)
+
+    if len(price_history[ticker]) < PRICE_HISTORY_LEN[ticker]:
+        return 0
+
+    oldest = price_history[ticker][0]
+    newest = price_history[ticker][-1]
+    avg    = sum(price_history[ticker]) / len(price_history[ticker])
+
+    momentum = (newest - oldest) / avg
+    return max(-1, min(1, momentum / 0.0005))
+
+
+def get_book_imbalance(ticker):
+    book = get_book(ticker)
+    bid_vol = sum([b['quantity'] for b in book['bids'][:3]])
+    ask_vol = sum([a['quantity'] for a in book['asks'][:3]])
+
+    total = bid_vol + ask_vol
+    if total == 0:
+        return 0
+
+    return (bid_vol - ask_vol) / total
+
+
+# --------------------------------------------------
+# CORE LOGIC
+# --------------------------------------------------
+
+def min_profitable_spread(ticker):
+    fee = FEES[ticker]
+    rebate = REBATES[ticker]
+    return 2 * fee - 2 * rebate + 0.002
+
+
+def calculate_quotes(bid, ask, position, signal, ticker):
+    spread = ask - bid
+    max_pos = MAX_TICKER_POSITION[ticker]
+
+    # Nonlinear inventory penalty
+    inv_penalty = (position / max_pos) ** 3
+    net_signal  = signal - inv_penalty
+
+    # Quoting mode selection
+    if spread > 3 * TICK:
+        mode = "JOIN"
+    elif abs(signal) > 0.4:
+        mode = "FADE"
+    else:
+        mode = "PASSIVE"
+
+    if mode == "PASSIVE":
+        buy_price  = bid
+        sell_price = ask
+
+    elif mode == "JOIN":
+        buy_price  = bid + TICK
+        sell_price = ask - TICK
+
+    else:  # FADE
+        buy_price  = bid - TICK
+        sell_price = ask + TICK
+
+    # Skew prices
+    buy_price  -= net_signal * TICK
+    sell_price -= net_signal * TICK
+
+    buy_price  = round(buy_price, 2)
+    sell_price = round(sell_price, 2)
+
+    if buy_price >= sell_price:
+        buy_price  = bid
+        sell_price = ask
+
+    return buy_price, sell_price
+
+
+def calculate_size(position, base_size, ticker):
+    max_pos = MAX_TICKER_POSITION[ticker]
+    inv_ratio = abs(position) / max_pos
+
+    # Reduce size as inventory increases
+    size_factor = max(0.2, 1 - inv_ratio)
+
+    return int(max(100, min(ORDER_LIMIT, base_size * size_factor)))
+
+
+# --------------------------------------------------
+# MAIN LOOP
+# --------------------------------------------------
 
 def main():
-    ticker_list = ['CNR','RY','AC']
+
+    ticker_list = ['CNR', 'RY', 'AC']
+
     while True:
+
         tick, status = get_tick()
         if status != "ACTIVE":
             break
 
-        net_position, gross_position = get_position()
-        order_size = calculate_dynamic_order_size(gross_position, ticker_list)
+        positions, net_position, gross_position = get_all_positions()
 
-        # 1) Place quotes for ALL tickers first (no per-ticker sleep)
+        # Continuous risk constraint
+        if gross_position > MAX_GROSS_EXPOSURE * 0.95:
+            for t in ticker_list:
+                s.post('http://localhost:9999/v1/commands/cancel', params={'ticker': t})
+            continue
+
+        # Allocate capital by opportunity
+        spreads = {}
         for t in ticker_list:
             bid, ask = get_bid_ask(t)
-            net_position, gross_position = get_position()
+            spreads[t] = ask - bid
 
-            if net_position < MAX_LONG_EXPOSURE and gross_position < MAX_GROSS_EXPOSURE:
-                resp = s.post('http://localhost:9999/v1/orders', params={
-                    'ticker': t, 'type': 'LIMIT', 'quantity': order_size,
-                    'price': bid - 0.02, 'action': 'BUY'
+        total_spread = sum(max(spreads[t], 0.001) for t in ticker_list)
+        capital = MAX_GROSS_EXPOSURE - gross_position
+
+        for t in ticker_list:
+
+            bid, ask = get_bid_ask(t)
+            spread = ask - bid
+
+            if spread < min_profitable_spread(t):
+                continue
+
+            trend = get_trend(t, bid, ask)
+            pressure = get_book_imbalance(t)
+
+            signal = 0.6 * trend + 0.4 * pressure
+
+            pos = positions.get(t, 0)
+
+            base_size = capital * (spread / total_spread) / 2
+            size = calculate_size(pos, base_size, t)
+
+            buy_price, sell_price = calculate_quotes(bid, ask, pos, signal, t)
+
+            max_pos = MAX_TICKER_POSITION[t]
+
+            if pos < max_pos and gross_position < MAX_GROSS_EXPOSURE:
+                s.post('http://localhost:9999/v1/orders', params={
+                    'ticker': t,
+                    'type': 'LIMIT',
+                    'quantity': size,
+                    'price': buy_price,
+                    'action': 'BUY'
                 })
 
-            if net_position > MAX_SHORT_EXPOSURE and gross_position < MAX_GROSS_EXPOSURE:
-                resp = s.post('http://localhost:9999/v1/orders', params={
-                    'ticker': t, 'type': 'LIMIT', 'quantity': order_size,
-                    'price': ask + 0.02, 'action': 'SELL'
+            if pos > -max_pos and gross_position < MAX_GROSS_EXPOSURE:
+                s.post('http://localhost:9999/v1/orders', params={
+                    'ticker': t,
+                    'type': 'LIMIT',
+                    'quantity': size,
+                    'price': sell_price,
+                    'action': 'SELL'
                 })
 
-        # 2) Let quotes sit in book
-        sleep(QUOTE_LIFETIME)
+        sleep(QUOTE_LIFETIME_BASE + random.random() * 0.08)
 
-        # 3) Cancel for ALL tickers (prevents stale orders piling up)
         for t in ticker_list:
             s.post('http://localhost:9999/v1/commands/cancel', params={'ticker': t})
 
 
-"""
-def main():
-    tick, status = get_tick()
-    ticker_list = ['CNR','RY','AC']
-
-    while status == 'ACTIVE': 
-        
-        net_position, gross_position = get_position()
-        
-        # Calculate dynamic order size based on available room
-        order_size = calculate_dynamic_order_size(gross_position, ticker_list)
-
-        for ticker_symbol in ticker_list:
-            
-            best_bid_price, best_ask_price = get_bid_ask(ticker_symbol)
-            net_position, gross_position = get_position()
-            
-       
-            if net_position < MAX_LONG_EXPOSURE and gross_position < MAX_GROSS_EXPOSURE:
-                resp = s.post('http://localhost:9999/v1/orders', params = {'ticker': ticker_symbol, 'type': 'LIMIT', 'quantity': order_size, 'price': best_bid_price - 0.04, 'action': 'BUY'})
-                order_id = resp.son()['order_id']
-                get_order_status(order_id)
-                
-            if net_position > MAX_SHORT_EXPOSURE and gross_position < MAX_GROSS_EXPOSURE:
-                resp = s.post('http://localhost:9999/v1/orders', params = {'ticker': ticker_symbol, 'type': 'LIMIT', 'quantity': order_size, 'price': best_ask_price + 0.04, 'action': 'SELL'})
-
-            sleep(0.5) 
-            
-            # Consider varying your per order volume to fit in your available gross position limit
-            # If i go over the limit, recover my reducing my positions so my algos starts trading again
-            # varying the prices in my order - bid below best build, offer above the best offer
-            # vary the volume of my orders base on my position for each stock - buy more when I am short
-            # vary the pricing and / or volume or your orders for each ticker symbol; vary your pricing and volumes by 
-
-            s.post('http://localhost:9999/v1/commands/cancel', params = {'ticker': ticker_symbol})
-
-        tick, status = get_tick()
-"""
-
 if __name__ == '__main__':
     main()
-
-
-
