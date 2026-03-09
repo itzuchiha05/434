@@ -142,7 +142,7 @@ def main():
                         print(f"[WARNING] Creation arb partial fill at tick {tick}")
 
         # FIX: sleep runs every loop iteration, not just when within limits
-        sleep(0.3)
+        sleep(0.2)
         tick, status = get_tick()
 
 if __name__ == '__main__':
