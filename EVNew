@@ -3,7 +3,7 @@ from time import sleep
 import numpy as np
 
 s = requests.Session()
-s.headers.update({'X-API-key': 'QBUSABDF'})
+s.headers.update({'X-API-key': 'T8JWJ9C7'})
 
 MAX_LONG_EXPOSURE_NET = 50000
 MAX_SHORT_EXPOSURE_NET = -50000
@@ -132,7 +132,11 @@ def get_news(eps_estimates, ownership_estimates, eps):
                         ownership_estimates[2, 3] = float(i['body'][i['body'].find("%") - 5 : i['body'].find("%")])                                                    
                 
             if i['headline'].find("Earnings release") > -1:
-                                    
+                # Print raw body on first earnings release to verify parsing offsets
+                print("RAW EARNINGS BODY:")
+                print(i['body'])
+                print("---")
+
                 if i['headline'].find("Q1") > -1:
                     eps[0, 0] = float(i['body'][i['body'].find("TP Q1:") + 32 : i['body'].find("TP Q1:") + 36 ])
                     eps[1, 0] = float(i['body'][i['body'].find("AS Q1:") + 32 : i['body'].find("AS Q1:") + 36 ])
@@ -186,34 +190,19 @@ def get_position():
         return gross_position, net_position
 
 def get_eps_error(tick, stock_idx, quarter):
-    """
-    Returns the EPS error range for a given stock and quarter based on current tick.
-    EPS error = base_error * quarters_until_release
-    Earnings released at ticks 60, 120, 180, 240.
-    base_error: TP=0.02, AS=0.04, BA=0.06
-    """
     base_errors = [0.02, 0.04, 0.06]
     release_ticks = [60, 120, 180, 240]
-    
-    # quarters already released have zero error (actual known)
     quarters_released = sum(1 for t in release_ticks if tick >= t)
     if quarter < quarters_released:
         return 0.0
-    
-    quarters_until_release = (quarter - quarters_released) + 1  # at least 1 quarter away
+    quarters_until_release = (quarter - quarters_released) + 1
     return base_errors[stock_idx] * quarters_until_release
 
 def get_ownership_error(tick, stock_idx):
-    """
-    Ownership error starts at +/- 20/25/30% after Q1 earnings, shrinks by 5% per quarter.
-    Before Q1 earnings (tick < 60), ownership is unknown so use max error.
-    """
     base_errors = [0.20, 0.25, 0.30]
     quarters_released = sum(1 for t in [60, 120, 180, 240] if tick >= t)
-    
     if quarters_released == 0:
-        return base_errors[stock_idx]  # no ownership estimate yet, max uncertainty
-    
+        return base_errors[stock_idx]
     error = base_errors[stock_idx] - (quarters_released - 1) * 0.05
     return max(error, 0.0)
 
@@ -223,6 +212,7 @@ def compute_TP_val(eps_total, own):
     DDM = ((div * (1 + g)) / (0.05 - g)) * (1 - ((1 + g) / (1 + 0.05))**5) + \
           ((div * ((1 + g)**5) * (1 + 0.02)) / (0.05 - 0.02)) / (1 + 0.05)**5
     pe = eps_total * 12
+    DDM = max(DDM, pe)  # floor DDM at P/E to prevent collapse under negative growth
     return (own / 100) * DDM + (1 - own / 100) * pe, DDM, pe
 
 def compute_AS_val(eps_total, own):
@@ -231,6 +221,7 @@ def compute_AS_val(eps_total, own):
     DDM = ((div * (1 + g)) / (0.075 - g)) * (1 - ((1 + g) / (1 + 0.075))**5) + \
           ((div * ((1 + g)**5) * (1 + 0.02)) / (0.075 - 0.02)) / (1 + 0.075)**5
     pe = eps_total * 16
+    DDM = max(DDM, pe)  # floor DDM at P/E to prevent collapse under negative growth
     return (own / 100) * DDM + (1 - own / 100) * pe, DDM, pe
 
 def compute_BA_val(eps_total, own):
@@ -257,6 +248,14 @@ def main():
     own_val = np.array([50.0, 50.0, 50.0]).reshape(3, 1)
     
     while status == "ACTIVE":
+
+        tick, status = get_tick()
+
+        # --- Hard skip before tick 60 — no valuation anchor exists yet ---
+        if tick < 60:
+            print(f"Tick {tick}: Pre-earnings period, no trading.")
+            sleep(0.5)
+            continue
         
         for i in range(3):
             market_prices[i, 0], market_prices[i, 1] = get_bid_ask(ticker_list[i])
@@ -264,29 +263,15 @@ def main():
         gross_position, net_position = get_position()
         eps_estimates, ownership_estimates, eps = get_news(eps_estimates, ownership_estimates, eps)
         
-        print("--- EPS Estimates ---")
-        print(eps_estimates)
-        print("--- Ownership Estimates ---")
-        print(ownership_estimates)
-        print("--- EPS ---")
-        print(eps)
-        
         for i in range(3):
             for j in range(4):
-                if eps_estimates[i, j] != 0:
-                    eps_val[i, j] = eps_estimates[i, j]
+                if eps[i, j] != 0:
+                    eps_val[i, j] = eps[i, j]          # actuals always win
+                elif eps_estimates[i, j] != 0:
+                    eps_val[i, j] = eps_estimates[i, j] # estimates only if no actual yet
                 if ownership_estimates[i, j] != 0:
                     own_val[i, 0] = ownership_estimates[i, j]
-                if eps[i, j] != 0:
-                    eps_val[i, j] = eps[i, j]
-                    
-        print("--- EPS for Valuation ---")
-        print(eps_val)
-        print("--- Ownership for Valuation ---")
-        print(own_val)
 
-        # --- Compute EPS uncertainty bounds per stock ---
-        # Sum up max/min EPS across quarters (only unreleased quarters have error)
         quarters_released = sum(1 for t in [60, 120, 180, 240] if tick >= t)
 
         eps_error = np.zeros((3, 4))
@@ -309,24 +294,15 @@ def main():
         BA_eps_max = eps_val_max.sum(axis=1)[2]
         BA_eps_min = eps_val_min.sum(axis=1)[2]
 
-        # --- Ownership uncertainty bounds ---
-        own_err = np.array([get_ownership_error(tick, i) for i in range(3)])  # as fraction (e.g. 0.20)
-        own_pct     = own_val[:, 0]                                 # e.g. 50.0
+        own_err = np.array([get_ownership_error(tick, i) for i in range(3)])
+        own_pct     = own_val[:, 0]
         own_pct_max = np.clip(own_pct + own_err * 100, 0, 100)
         own_pct_min = np.clip(own_pct - own_err * 100, 0, 100)
 
-        # --- Midpoint valuations (unchanged logic) ---
         TP_val, TP_DDM, TP_pe = compute_TP_val(TP_eps, own_pct[0])
         AS_val, AS_DDM, AS_pe = compute_AS_val(AS_eps, own_pct[1])
         BA_val, BA_pe_inst, BA_pe_retail = compute_BA_val(BA_eps, own_pct[2])
 
-        # --- Min/Max valuations ---
-        # For TP and AS: if DDM > PE, higher ownership -> higher val -> max own goes with max eps for upper bound
-        #                if DDM < PE, higher ownership -> lower val  -> min own goes with max eps for upper bound
-
-        # TP
-        TP_val_max_eps, _, _ = compute_TP_val(TP_eps_max, own_pct[0])
-        TP_val_min_eps, _, _ = compute_TP_val(TP_eps_min, own_pct[0])
         if TP_DDM >= TP_pe:
             TP_val_max, _, _ = compute_TP_val(TP_eps_max, own_pct_max[0])
             TP_val_min, _, _ = compute_TP_val(TP_eps_min, own_pct_min[0])
@@ -334,9 +310,6 @@ def main():
             TP_val_max, _, _ = compute_TP_val(TP_eps_max, own_pct_min[0])
             TP_val_min, _, _ = compute_TP_val(TP_eps_min, own_pct_max[0])
 
-        # AS
-        AS_val_max_eps, _, _ = compute_AS_val(AS_eps_max, own_pct[1])
-        AS_val_min_eps, _, _ = compute_AS_val(AS_eps_min, own_pct[1])
         if AS_DDM >= AS_pe:
             AS_val_max, _, _ = compute_AS_val(AS_eps_max, own_pct_max[1])
             AS_val_min, _, _ = compute_AS_val(AS_eps_min, own_pct_min[1])
@@ -344,58 +317,89 @@ def main():
             AS_val_max, _, _ = compute_AS_val(AS_eps_max, own_pct_min[1])
             AS_val_min, _, _ = compute_AS_val(AS_eps_min, own_pct_max[1])
 
-        # BA: institutional PE > retail PE when g > 0, so higher ownership -> higher val
         BA_val_max, _, _ = compute_BA_val(BA_eps_max, own_pct_max[2])
         BA_val_min, _, _ = compute_BA_val(BA_eps_min, own_pct_min[2])
 
-        print("--- TP Valuation (min / mid / max) ---")
-        print(f"  {TP_val_min:.2f} / {TP_val:.2f} / {TP_val_max:.2f}")
-        print("--- AS Valuation (min / mid / max) ---")
-        print(f"  {AS_val_min:.2f} / {AS_val:.2f} / {AS_val_max:.2f}")
-        print("--- BA Valuation (min / mid / max) ---")
-        print(f"  {BA_val_min:.2f} / {BA_val:.2f} / {BA_val_max:.2f}")
+        # Phase-based buffer
+        if tick < 120:
+            buffer = 5.0
+        elif tick < 180:
+            buffer = 3.0
+        elif tick < 240:
+            buffer = 1.5
+        else:
+            buffer = 0.5
+
+        # --- Valuation check diagnostic ---
+        print("\n========== VALUATION CHECK ==========")
+        print(f"Tick: {tick} | Buffer: {buffer:.2f} | Net: {net_position} | Gross: {gross_position}")
+        print(f"{'Stock':<6} {'Bid':>8} {'Ask':>8} {'Val':>8} {'Min':>8} {'Max':>8} {'Signal'}")
+        print(f"{'-'*6} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*8}")
+
+        stocks = ['TP', 'AS', 'BA']
+        vals   = [TP_val, AS_val, BA_val]
+        mins   = [TP_val_min, AS_val_min, BA_val_min]
+        maxs   = [TP_val_max, AS_val_max, BA_val_max]
+
+        for i in range(3):
+            bid = market_prices[i, 0]
+            ask = market_prices[i, 1]
+            val = vals[i]
+            lo  = mins[i]
+            hi  = maxs[i]
+
+            if ask != -1 and ask < val - buffer:
+                signal = "BUY"
+            elif bid != -1 and bid > val + buffer:
+                signal = "SELL"
+            else:
+                signal = "HOLD"
+
+            print(f"{stocks[i]:<6} {bid:>8.2f} {ask:>8.2f} {val:>8.2f} {lo:>8.2f} {hi:>8.2f} {signal}")
+
+        print(f"EPS (TP/AS/BA): {TP_eps:.2f} / {AS_eps:.2f} / {BA_eps:.2f}")
+        print(f"Own% (TP/AS/BA): {own_pct[0]:.1f} / {own_pct[1]:.1f} / {own_pct[2]:.1f}")
+        print("======================================\n")
 
         # --- Trading logic ---
-        # Phase-based buffer and order size
-        if tick < 60:
-            buffer = 999  # don't trade, prices are random
-            order_qty = 10000
-        elif tick < 120:
-            buffer = 5.0  # Q1 earnings + estimates received
-            order_qty = 10000  # lots of uninformed liquidity early
-        elif tick < 180:
-            buffer = 3.0  # Q2 earnings + estimates received
-            order_qty = 5000
-        elif tick < 240:
-            buffer = 1.5  # Q3 earnings + estimates received
-            order_qty = 5000
-        else:
-            buffer = 0.5  # Q4 estimates received, high confidence
-            order_qty = 5000
-        print(f"--- Buffer: {buffer:.2f}, Order Qty: {order_qty} ---")
-
-        # Hold strategy - market buy when undervalued, limit sell when overvalued
-
         # TP
-        if market_prices[0, 0] > TP_val + buffer and market_prices[0, 0] != -1 and net_position > MAX_SHORT_EXPOSURE_NET:
-            resp = s.post('http://localhost:9999/v1/orders', params={'ticker': 'TP', 'type': 'LIMIT', 'quantity': ORDER_LIMIT, 'price': TP_val + buffer, 'action': 'SELL'})
-
-        if market_prices[0, 1] < TP_val - buffer and market_prices[0, 1] != -1 and net_position < MAX_LONG_EXPOSURE_NET:
-            resp = s.post('http://localhost:9999/v1/orders', params={'ticker': 'TP', 'type': 'MARKET', 'quantity': ORDER_LIMIT, 'action': 'BUY'})
+        bid, ask = market_prices[0, 0], market_prices[0, 1]
+        if bid != -1 and bid > TP_val + buffer and net_position > MAX_SHORT_EXPOSURE_NET:
+            s.post('http://localhost:9999/v1/orders', params={
+                'ticker': 'TP', 'type': 'LIMIT', 'quantity': ORDER_LIMIT,
+                'price': TP_val + buffer, 'action': 'SELL'
+            })
+        if ask != -1 and ask < TP_val - buffer and net_position < MAX_LONG_EXPOSURE_NET:
+            s.post('http://localhost:9999/v1/orders', params={
+                'ticker': 'TP', 'type': 'LIMIT', 'quantity': ORDER_LIMIT,
+                'price': TP_val - buffer, 'action': 'BUY'
+            })
 
         # AS
-        if market_prices[1, 0] > AS_val + buffer and market_prices[1, 0] != -1 and net_position > MAX_SHORT_EXPOSURE_NET:
-            resp = s.post('http://localhost:9999/v1/orders', params={'ticker': 'AS', 'type': 'LIMIT', 'quantity': ORDER_LIMIT, 'price': AS_val + buffer, 'action': 'SELL'})
-
-        if market_prices[1, 1] < AS_val - buffer and market_prices[1, 1] != -1 and net_position < MAX_LONG_EXPOSURE_NET:
-            resp = s.post('http://localhost:9999/v1/orders', params={'ticker': 'AS', 'type': 'MARKET', 'quantity': ORDER_LIMIT, 'action': 'BUY'})
+        bid, ask = market_prices[1, 0], market_prices[1, 1]
+        if bid != -1 and bid > AS_val + buffer and net_position > MAX_SHORT_EXPOSURE_NET:
+            s.post('http://localhost:9999/v1/orders', params={
+                'ticker': 'AS', 'type': 'LIMIT', 'quantity': ORDER_LIMIT,
+                'price': AS_val + buffer, 'action': 'SELL'
+            })
+        if ask != -1 and ask < AS_val - buffer and net_position < MAX_LONG_EXPOSURE_NET:
+            s.post('http://localhost:9999/v1/orders', params={
+                'ticker': 'AS', 'type': 'LIMIT', 'quantity': ORDER_LIMIT,
+                'price': AS_val - buffer, 'action': 'BUY'
+            })
 
         # BA
-        if market_prices[2, 0] > BA_val + buffer and market_prices[2, 0] != -1 and net_position > MAX_SHORT_EXPOSURE_NET:
-            resp = s.post('http://localhost:9999/v1/orders', params={'ticker': 'BA', 'type': 'LIMIT', 'quantity': ORDER_LIMIT, 'price': BA_val + buffer, 'action': 'SELL'})
-
-        if market_prices[2, 1] < BA_val - buffer and market_prices[2, 1] != -1 and net_position < MAX_LONG_EXPOSURE_NET:
-            resp = s.post('http://localhost:9999/v1/orders', params={'ticker': 'BA', 'type': 'MARKET', 'quantity': ORDER_LIMIT, 'action': 'BUY'})
+        bid, ask = market_prices[2, 0], market_prices[2, 1]
+        if bid != -1 and bid > BA_val + buffer and net_position > MAX_SHORT_EXPOSURE_NET:
+            s.post('http://localhost:9999/v1/orders', params={
+                'ticker': 'BA', 'type': 'LIMIT', 'quantity': ORDER_LIMIT,
+                'price': BA_val + buffer, 'action': 'SELL'
+            })
+        if ask != -1 and ask < BA_val - buffer and net_position < MAX_LONG_EXPOSURE_NET:
+            s.post('http://localhost:9999/v1/orders', params={
+                'ticker': 'BA', 'type': 'LIMIT', 'quantity': ORDER_LIMIT,
+                'price': BA_val - buffer, 'action': 'BUY'
+            })
 
         sleep(0.5)
         tick, status = get_tick()
